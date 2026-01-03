@@ -23,6 +23,7 @@ Core capabilities:
 - `server/`: MCP HTTP server and tool implementations.
 - `client/`: Tkinter UI and LLM orchestration.
 - `shared/`: tool catalog and shared docs.
+- `docs/`: extended guides and database schema.
 - `data/`: reserved for datasets (empty by default).
 - `scripts/`: reserved for helper scripts.
 - `tests/`: reserved for tests.
@@ -106,6 +107,9 @@ CREATE INDEX IF NOT EXISTS idx_memory_items_tsv
 CREATE INDEX IF NOT EXISTS idx_memory_items_conversation
     ON memory_items(conversation_id);
 ```
+
+Full schema file:
+- `docs/DB_SCHEMA.sql`
 
 Additional schema for company research + workspace:
 ```
@@ -294,6 +298,9 @@ Invoke response:
 
 ## Tool Catalog
 Tools are defined in `server/tool_registry.py` and implemented in `server/tools/`.
+
+## Extended Guide
+See `docs/APP_GUIDE.md` for a full API and usage guide.
 
 ### Web and Search
 - `web.search`: DuckDuckGo search.

@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 
 from .config import load_settings
-from .llm_agent import chat_with_tools, chat_with_tools_custom, NEPSE_SYSTEM_PROMPT
+from .llm_agent import chat_with_tools
 from .enrichment import enrich_company_data, extract_financials_from_sec
 from .citadel_agent import apply_actions, build_context, generate_actions, normalize_actions
 from .tool_registry import TOOLS
@@ -17,19 +17,7 @@ from .tool_dispatch import dispatch_tool
 from .research import build_research_bundle
 from .reporting import generate_report
 from .analytics import compare_prices, portfolio_stats
-from .analyst import build_brief, generate_analysis, validate_analysis
-from .tools.paper_tools import (
-    paper_create_portfolio,
-    paper_list_portfolios,
-    paper_portfolio_summary,
-    paper_positions,
-    paper_trades,
-    paper_trade_proposals,
-    paper_trade_propose,
-    paper_trade_approve,
-    paper_trade_reject,
-    paper_add_cash,
-)
+from .extensions import get_extension
 from .db import (
     store_research_bundle,
     store_report,
@@ -84,15 +72,18 @@ from .db import (
     list_company_subsidiaries,
     add_company_ownership,
     list_company_ownership,
-    store_analyst_run,
-    get_analyst_run,
-    delete_conversation,
 )
 
 load_dotenv()
 
 app = FastAPI(title="Financial MCP Server", version="0.1.0")
 settings = load_settings()
+_extension = get_extension()
+if _extension and hasattr(_extension, "register_routes"):
+    try:
+        _extension.register_routes(app)
+    except Exception:
+        pass
 origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
 if not origins:
     origins = [
@@ -137,36 +128,6 @@ class ChatResponse(BaseModel):
     conversation_id: str
 
 
-class NepseChatRequest(BaseModel):
-    message: str
-    history: list[Dict[str, str]] = []
-    use_memory: bool = False
-    store_memory: bool = False
-    conversation_id: str | None = None
-    title: str | None = None
-    model: str | None = None
-    allow_web: bool = False
-
-
-class PaperPortfolioRequest(BaseModel):
-    name: str | None = None
-    starting_cash: float = 100000.0
-    currency: str = "NPR"
-
-
-class PaperCashRequest(BaseModel):
-    portfolio_id: str
-    amount: float
-    reason: str | None = None
-
-
-class PaperTradeProposalRequest(BaseModel):
-    portfolio_id: str
-    symbol: str
-    side: str
-    quantity: float
-    reason: str | None = None
-    model: str | None = None
 
 
 class ResearchRequest(BaseModel):
@@ -209,21 +170,6 @@ class ComparisonLatestRequest(BaseModel):
 class WatchlistRequest(BaseModel):
     symbol: str
     note: str | None = None
-
-
-class AnalystBriefRequest(BaseModel):
-    market: str
-    symbol: str
-    horizon_days: int = 365
-
-
-class AnalystAnalyzeRequest(BaseModel):
-    market: str
-    symbol: str
-    horizon_days: int = 365
-    include_disclaimer: bool = True
-    save: bool = True
-    model: str | None = None
 
 
 class IdentifierInput(BaseModel):
@@ -551,217 +497,6 @@ def chat_endpoint(request: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@app.post("/nepse/chat")
-def nepse_chat_endpoint(request: NepseChatRequest) -> Dict[str, Any]:
-    settings = load_settings()
-    if not settings.groq_api_key:
-        raise HTTPException(status_code=400, detail="GROQ_API_KEY is missing")
-    try:
-        conversation_id = request.conversation_id
-        if not conversation_id:
-            conversation = create_conversation(request.title or "NEPSE Chat")
-            conversation_id = conversation["id"]
-        else:
-            existing = get_conversation(conversation_id)
-            if not existing:
-                conversation = create_conversation(request.title or "NEPSE Chat")
-                conversation_id = conversation["id"]
-        tool_names = [
-            "nepse.summary",
-            "nepse.index",
-            "nepse.subindices",
-            "nepse.is_open",
-            "nepse.symbol_snapshot",
-            "nepse.company_details",
-            "nepse.price_volume_history",
-            "nepse.top_gainers",
-            "nepse.top_losers",
-            "nepse.top_trade_scrips",
-            "nepse.top_transaction_scrips",
-            "nepse.top_turnover_scrips",
-            "nepse.supply_demand",
-            "nepse.trade_turnover_transaction",
-            "nepse.daily_scrip_price_graph",
-            "nepse.daily_index_graph",
-            "calc.returns",
-            "calc.risk",
-            "sentiment.analyze",
-            "paper.portfolios",
-            "paper.portfolio_create",
-            "paper.portfolio_summary",
-            "paper.positions",
-            "paper.trades",
-            "paper.trade_proposals",
-            "paper.trade_propose",
-        ]
-        if request.allow_web:
-            tool_names.extend(
-                [
-                    "web.search",
-                    "web.fetch",
-                    "web.fetch_browser",
-                    "web.extract",
-                    "news.search",
-                    "news.extract",
-                ]
-            )
-        add_message(conversation_id, "user", request.message)
-        try:
-            reply = chat_with_tools_custom(
-                message=request.message,
-                history=request.history,
-                settings=settings,
-                tool_names=tool_names,
-                system_prompt=NEPSE_SYSTEM_PROMPT,
-                model_override=request.model,
-                use_memory=request.use_memory,
-                store_memory=request.store_memory,
-                conversation_id=request.conversation_id,
-                explore_links=request.allow_web,
-            )
-        except Exception as inner_exc:
-            if "Request too large" in str(inner_exc) or "rate_limit_exceeded" in str(inner_exc):
-                fallback_tools = [
-                    "nepse.summary",
-                    "nepse.index",
-                    "nepse.symbol_snapshot",
-                ]
-                reply = chat_with_tools_custom(
-                    message=request.message,
-                    history=[],
-                    settings=settings,
-                    tool_names=fallback_tools,
-                    system_prompt=NEPSE_SYSTEM_PROMPT
-                    + " If data is insufficient, ask the user to narrow the request.",
-                    model_override=request.model,
-                    use_memory=False,
-                    store_memory=False,
-                    conversation_id=conversation_id,
-                    explore_links=False,
-                )
-            else:
-                raise
-        add_message(conversation_id, "assistant", reply)
-        return {"reply": reply, "conversation_id": conversation_id}
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
-@app.get("/nepse/chat/models")
-def nepse_chat_models() -> Dict[str, Any]:
-    models = []
-    for key in ("GROQ_MODEL", "GROQ_MODEL1", "GROQ_MODEL2"):
-        value = os.getenv(key, "").strip()
-        if value and value not in models:
-            models.append(value)
-    defaults = [
-        "qwen/qwen3-32b",
-        "moonshotai/kimi-k2-instruct",
-        "moonshotai/kimi-k2-instruct-0905",
-    ]
-    for model in defaults:
-        if model not in models:
-            models.append(model)
-    return {"models": models}
-
-
-@app.get("/nepse/chat/conversations")
-def nepse_chat_conversations() -> Dict[str, Any]:
-    return {"conversations": list_conversations()}
-
-
-@app.get("/nepse/chat/conversations/{conversation_id}")
-def nepse_chat_conversation_messages(conversation_id: str) -> Dict[str, Any]:
-    return {"messages": get_messages(conversation_id)}
-
-
-@app.delete("/nepse/chat/conversations/{conversation_id}")
-def nepse_chat_conversation_delete(conversation_id: str) -> Dict[str, Any]:
-    existing = get_conversation(conversation_id)
-    if not existing:
-        raise HTTPException(status_code=404, detail="conversation_not_found")
-    return delete_conversation(conversation_id)
-
-
-@app.post("/paper/portfolios")
-def paper_portfolios_create(request: PaperPortfolioRequest) -> Dict[str, Any]:
-    return paper_create_portfolio(
-        settings,
-        name=request.name,
-        starting_cash=request.starting_cash,
-        currency=request.currency,
-    )
-
-
-@app.get("/paper/portfolios")
-def paper_portfolios_list() -> Dict[str, Any]:
-    return {"portfolios": paper_list_portfolios(settings)}
-
-
-@app.get("/paper/portfolios/{portfolio_id}")
-def paper_portfolios_summary(portfolio_id: str) -> Dict[str, Any]:
-    summary = paper_portfolio_summary(settings, portfolio_id)
-    if not summary:
-        raise HTTPException(status_code=404, detail="portfolio_not_found")
-    return summary
-
-
-@app.get("/paper/portfolios/{portfolio_id}/positions")
-def paper_portfolios_positions(portfolio_id: str) -> Dict[str, Any]:
-    return {"positions": paper_positions(settings, portfolio_id)}
-
-
-@app.get("/paper/portfolios/{portfolio_id}/trades")
-def paper_portfolios_trades(portfolio_id: str, limit: int = 200) -> Dict[str, Any]:
-    return {"trades": paper_trades(settings, portfolio_id, limit=limit)}
-
-
-@app.get("/paper/portfolios/{portfolio_id}/proposals")
-def paper_portfolios_proposals(portfolio_id: str, status: str | None = None) -> Dict[str, Any]:
-    return {"proposals": paper_trade_proposals(settings, portfolio_id, status=status)}
-
-
-@app.post("/paper/cash")
-def paper_cash_add(request: PaperCashRequest) -> Dict[str, Any]:
-    return paper_add_cash(settings, request.portfolio_id, request.amount, request.reason)
-
-
-@app.post("/paper/trades/propose")
-def paper_trade_propose_endpoint(request: PaperTradeProposalRequest) -> Dict[str, Any]:
-    side = request.side.lower()
-    if side not in ("buy", "sell"):
-        raise HTTPException(status_code=400, detail="side_must_be_buy_or_sell")
-    if request.quantity <= 0:
-        raise HTTPException(status_code=400, detail="quantity_must_be_positive")
-    return paper_trade_propose(
-        settings,
-        portfolio_id=request.portfolio_id,
-        symbol=request.symbol,
-        side=side,
-        quantity=request.quantity,
-        reason=request.reason,
-        model=request.model,
-    )
-
-
-@app.post("/paper/trades/{proposal_id}/approve")
-def paper_trade_approve_endpoint(proposal_id: str) -> Dict[str, Any]:
-    result = paper_trade_approve(settings, proposal_id)
-    if result.get("status") == "not_found":
-        raise HTTPException(status_code=404, detail="proposal_not_found")
-    if result.get("status") == "price_unavailable":
-        raise HTTPException(status_code=400, detail="price_unavailable")
-    if result.get("status") == "insufficient_cash":
-        raise HTTPException(status_code=400, detail="insufficient_cash")
-    return result
-
-
-@app.post("/paper/trades/{proposal_id}/reject")
-def paper_trade_reject_endpoint(proposal_id: str) -> Dict[str, Any]:
-    result = paper_trade_reject(proposal_id)
-    if result.get("status") == "not_found":
-        raise HTTPException(status_code=404, detail="proposal_not_found")
-    return result
 
 
 @app.post("/research")
@@ -805,77 +540,6 @@ def report_endpoint(request: ReportRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@app.post("/analyst/brief")
-def analyst_brief(request: AnalystBriefRequest) -> Dict[str, Any]:
-    settings = load_settings()
-    try:
-        brief = build_brief(settings, request.market, request.symbol, request.horizon_days)
-        return {"brief": brief}
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
-@app.post("/analyst/analyze")
-def analyst_analyze(request: AnalystAnalyzeRequest) -> Dict[str, Any]:
-    settings = load_settings()
-    try:
-        brief = build_brief(settings, request.market, request.symbol, request.horizon_days)
-        analysis = generate_analysis(
-            settings,
-            brief,
-            include_disclaimer=request.include_disclaimer,
-            model_override=request.model,
-        )
-        ok, errors = validate_analysis(brief, analysis)
-        run_id = None
-        if request.save:
-            stored = store_analyst_run(
-                request.market,
-                request.symbol,
-                request.model_dump(),
-                brief,
-                analysis,
-            )
-            run_id = stored.get("id")
-        return {
-            "brief": brief,
-            "analysis": analysis,
-            "valid": ok,
-            "validation_errors": errors,
-            "run_id": run_id,
-        }
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
-@app.get("/analyst/runs/{run_id}")
-def analyst_run_get(run_id: str) -> Dict[str, Any]:
-    item = get_analyst_run(run_id)
-    if not item:
-        raise HTTPException(status_code=404, detail="Analyst run not found")
-    return item
-
-
-@app.get("/analyst/models")
-def analyst_models() -> Dict[str, Any]:
-    models = []
-    for key in ("GROQ_MODEL", "GROQ_MODEL1", "GROQ_MODEL2"):
-        value = os.getenv(key, "").strip()
-        if value and value not in models:
-            models.append(value)
-    defaults = [
-        "qwen/qwen3-32b",
-        "moonshotai/kimi-k2-instruct",
-        "moonshotai/kimi-k2-instruct-0905",
-    ]
-    for model in defaults:
-        if model not in models:
-            models.append(model)
-    return {"models": models}
 
 
 @app.post("/compare")

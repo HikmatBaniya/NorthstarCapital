@@ -53,6 +53,7 @@ Optional values:
 - `HTTP_RETRY_COUNT`: retry attempts for transient HTTP errors.
 - `HTTP_RETRY_BACKOFF_SECONDS`: base backoff seconds between retries.
 - `WEB_SEARCH_PROVIDER`: currently only `duckduckgo`.
+- `LOCAL_EXTENSION_MODULE`: optional Python module path for local-only extensions (default: `local_extensions.extension`).
 
 Example `.env`:
 ```
@@ -298,6 +299,10 @@ Invoke response:
 
 ## Tool Catalog
 Tools are defined in `server/tool_registry.py` and implemented in `server/tools/`.
+
+## Local Extensions (Optional)
+For local-only functionality, you can add a module at `local_extensions/extension.py`.
+If present, it can register extra API routes and tool specs without being committed.
 
 ## Extended Guide
 See `docs/APP_GUIDE.md` for a full API and usage guide.

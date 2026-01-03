@@ -20,7 +20,6 @@ class Settings:
     citadel_refresh_interval_seconds: int
     openfigi_api_key: str
     gdelt_max_records: int
-    nepse_api_base: str
 
 
 def load_settings() -> Settings:
@@ -41,5 +40,4 @@ def load_settings() -> Settings:
         citadel_refresh_interval_seconds=int(os.getenv("CITADEL_REFRESH_INTERVAL_SECONDS", "21600")),
         openfigi_api_key=os.getenv("OPENFIGI_API_KEY", ""),
         gdelt_max_records=int(os.getenv("GDELT_MAX_RECORDS", "8")),
-        nepse_api_base=os.getenv("NEPSE_API_BASE", "http://localhost:18080"),
     )

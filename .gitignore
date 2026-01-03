@@ -25,3 +25,4 @@ ENV/
 Thumbs.db
 node_modules/
 local_extensions/
+docs/INTERNAL_IMPLEMENTATION.md
